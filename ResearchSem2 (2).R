@@ -82,13 +82,13 @@ rootFinder <- function(a,b,v)
   }
   return(out)
 }
+rootFinderVector <- Vectorize(rootFinder,"v")
 ##Cubic Spline Interpolation NOT FULLY IMPLEMENTED YET
 rootFinderInterp <- function(a,b,v) {
   minval <- min(v)
   maxval <- max(v)
   testvals <- seq(minval,maxval,(maxval-minval)/199)
-  basevals <- sapply(testvals,rootFinder,a=a,b=b)
-  testing <- matrix(c(testvals,basevals),ncol = 2)
+  basevals <- unlist(parLapply(c1,1:7,MLEPartial,a=a,b=b,v=testvals))
   return(spline(x = testvals,y = basevals,xout = v,method = "hyman")$y)
 }
 ##Empirical CDF (uniroot appears to be better)
@@ -103,8 +103,9 @@ Copula <- function(a,b,v1,v2) {
 }
 ##Copula PDF
 CopulaPDF <- function(a,b,v1,v2) {
-  q1 <- tryCatch(rootFinder(a,b,v1), error = function(err) FALSE, warning = function(err) FALSE)
-  q2 <- tryCatch(rootFinder(a,b,v2), error = function(err) FALSE, warning = function(err) FALSE)
+  q1 <- tryCatch(rootFinderInterp(a,b,v1), error = function(err) FALSE, warning = function(err) FALSE)
+  q2 <- sort(q1)[rank(v2)]
+##  q2 <- tryCatch(rootFinderInterp(a,b,v2), error = function(err) FALSE, warning = function(err) FALSE)
   if (is.logical(q1)||is.logical(q2))
   {
     return(NA)
@@ -112,9 +113,9 @@ CopulaPDF <- function(a,b,v1,v2) {
   else {
     if (is.finite(q1) && is.finite(q2))
     {
-      tem1 <- TwoVarFPDF(a,b,q1,q2)
-      tem2 <- OneVarFPDF(a,b,q1)
-      tem3 <- OneVarFPDF(a,b,q2)
+      tem1 <- TwoVarFPDFVector(a,b,q1,q2)
+      tem2 <- OneVarFPDFVector(a,b,q1)
+      tem3 <- OneVarFPDFVector(a,b,q2)
       if (is.finite(tem1) && is.finite(tem2) && is.finite(tem3))
       {
         return(tem1/tem2/tem3)
@@ -131,28 +132,29 @@ CopulaPDF <- function(a,b,v1,v2) {
 ##Allows Copula PDF to take a vector as input
 CopulaPDFVector <- Vectorize(CopulaPDF,c("v1","v2"))
 ##Portion of the MLE run on a specific core
-MLEPartial <- function(a,b,m,i) {
-  x <- floor(nrow(m)/7)
+MLEPartial <- function(a,b,v,i) {
+  x <- floor(length(v)/7)
   if(i < 7) {
-    ourdat <- m[(((i-1)*x+1)):(i*x),]
+    ourdat <- v[(((i-1)*x+1)):(i*x)]
   }
   else {
-    ourdat <- m[(((i-1)*x)+1):(nrow(m)),]
+    ourdat <- v[(((i-1)*x)+1):(length(v))]
   }
-  hold <- CopulaPDFVector(a,b,ourdat[,1],ourdat[,2])
-  return(-log(hold))
+  hold <- rootFinderVector(a,b,ourdat)
+  return(hold)
 }
 ##Portion of the MLE that assigns portions of the computations to the cores
 MLEFinal <- function(a,b,m) {
-  hold <- unlist(parLapply(c1,1:7,MLEPartial,a=a,b=b,m=m))
+  ##hold <- unlist(parLapply(c1,1:7,MLEPartial,a=a,b=b,m=m))
+  hold <- (CopulaPDF(a,b,m[,1],m[,2]))
+  hold <- -log(hold)
   hold <- hold[!is.na(hold)]
   hold <- hold[is.finite(hold)]
   hold <- hold[!is.nan(hold)]
   return(sum(hold))
 }
-
 ##Coputes the actual MLE using the optim function
-solveMLE <- function(m,a,b) {
+solveMLE <- function(a,b,m) {
   hold <-  m
   corr <- cor(x=hold[,1],y=hold[,2],method="kendall")
   if(corr < 0) {
@@ -166,13 +168,13 @@ solveMLE <- function(m,a,b) {
   registerDoParallel(no_cores)
   c1 <<- makeCluster(no_cores)
   clusterEvalQ(c1,library(pryr))
-  clusterExport(c1,varlist=c("hypergeo","OneVarF","OneVarFPDF","OneVarFPDFVector","TwoVarF","TwoVarFPDF","TwoVarFPDFVector","Copula","CopulaPDF","CopulaPDFVector","rootFinder","rootFinderInterp","appellf1","jpGGEE","jdGGEE","dGGEE_COP","qGGEE","dGGEE","dat"))
+  clusterExport(c1,varlist=c("hypergeo","OneVarF","OneVarFPDF","OneVarFPDFVector","TwoVarF","TwoVarFPDF","TwoVarFPDFVector","Copula","CopulaPDF","CopulaPDFVector","rootFinder","rootFinderInterp","appellf1","jpGGEE","jdGGEE","dGGEE_COP","qGGEE","dGGEE","dat","rootFinderVector"))
   answer <- (optim(c(a,b),temp,method="L-BFGS-B",lower = 0.1, upper = 5))
   stopCluster(c1)
   return(answer)
 }
 ##Coputes the actual MLE using the NLM function
-solveMLENLM <- function(m,a,b) {
+solveMLENLM <- function(a,b,m) {
   hold <-  m
   corr <- cor(x=hold[,1],y=hold[,2],method="kendall")
   if(corr < 0) {
@@ -186,7 +188,7 @@ solveMLENLM <- function(m,a,b) {
   registerDoParallel(no_cores)
   c1 <<- makeCluster(no_cores)
   clusterEvalQ(c1,library(pryr))
-  clusterExport(c1,varlist=c("hypergeo","OneVarF","OneVarFPDF","OneVarFPDFVector","TwoVarF","TwoVarFPDF","TwoVarFPDFVector","Copula","CopulaPDF","CopulaPDFVector","rootFinder","rootFinderInterp","appellf1","jpGGEE","jdGGEE","dGGEE_COP","qGGEE","dGGEE","dat"))
+  clusterExport(c1,varlist=c("hypergeo","OneVarF","OneVarFPDF","OneVarFPDFVector","TwoVarF","TwoVarFPDF","TwoVarFPDFVector","Copula","CopulaPDF","CopulaPDFVector","rootFinder","rootFinderInterp","appellf1","jpGGEE","jdGGEE","dGGEE_COP","qGGEE","dGGEE","dat","rootFinderVector"))
   answer <- (nlm(temp,c(log(a-0.01),log(b-0.01))))
   stopCluster(c1)
   answer$estimate <- exp(answer$estimate)+0.01
@@ -201,16 +203,21 @@ testData <- read.table("CopulaOneData.txt")
 
 data("euro0306")
 dat <- uscore(euro0306[,c(2,3)])[1:100,]
-dat <- matrix(c(uscore(testData$V2),uscore(testData$V3)),ncol = 2)
+dat <- matrix(c(uscore(testData$V2),uscore(testData$V3),uscore(testData$V4),uscore(testData$V5)),ncol = 2)
 par0 <- c(0.5, 0.5)
 
-system.time(cat(solveMLE(dat,0.3,0.3)$par))
+system.time(cat(solveMLENLM(0.5,0.5,dat)$estimate))
 
-system.time(cat(fitCopulaOne(par0, dat=dat, copula_family="GGEE",lower = 0.1, upper = 5,opt="optim")$par))
+system.time(cat(fitCopulaOne(par0, dat=dat, copula_family="GGEE",lower = 0.1, upper = 5,opt="nlm")$estimate))
 
-fitCopulaOne(par0, dat=dat, copula_family="GGEE",lower = 0.1, upper = 5,opt="nlm")
+fitCopulaOne(par0, dat=dat, copula_family="GGEE",lower = 0.1, upper = 5,opt="optim")
 
 solveMLE(dat)
+
+
+rootFinderInterp(0.5,0.5,dat[,1])
+MLEFinal(0.5,0.5,dat)
+
 
 stopCluster(c1)
 
@@ -248,6 +255,8 @@ dat <- matrix(c(uscore(x1),uscore(x2)),ncol = 2)
 system.time(solveMLENLM(dat,0.3,0.3))
 range(x1,x2)
 
+c(0.1,0.4,0.6)[rank(c(0.4,0.1,0.6))]
+
 ##Try different starting functions to see if we get better estimation on optim and nlm
 ##Find out which is faster, optim or nlm
 ##Clean the code, add comments, push to github
@@ -256,3 +265,8 @@ range(x1,x2)
 
 
 ##Implement Cubic Spline into main file
+
+##Compute all data points but only for q1
+##Try cubic spline with transformation or make it smoother
+##Try different numbers of interpolation points (difference in alpha and beta)
+##AIC
